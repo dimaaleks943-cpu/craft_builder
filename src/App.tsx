@@ -1,236 +1,25 @@
 import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
-import { Editor, Frame, Element, useEditor, useNode } from '@craftjs/core';
-
-const selectedOutline = '2px solid #2563eb';
-
-// Парсит строку CSS в объект стилей (camelCase для React)
-function parseCustomCss(css: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  if (!css?.trim()) return result;
-  const declarations = css.split(';').filter(Boolean);
-  for (const decl of declarations) {
-    const colonIndex = decl.indexOf(':');
-    if (colonIndex === -1) continue;
-    const key = decl.slice(0, colonIndex).trim();
-    const value = decl.slice(colonIndex + 1).trim();
-    if (key && value) {
-      const camelKey = key.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-      result[camelKey] = value;
-    }
-  }
-  return result;
-}
-
-// Извлекает @media блоки и возвращает inline-часть и массив медиа-блоков
-function splitMediaQueries(css: string): { inline: string; mediaBlocks: Array<{ condition: string; content: string }> } {
-  const mediaBlocks: Array<{ condition: string; content: string }> = [];
-  let i = 0;
-  const s = css;
-  const inlineParts: string[] = [];
-
-  while (i < s.length) {
-    const mediaStart = s.indexOf('@media', i);
-    if (mediaStart === -1) {
-      inlineParts.push(s.slice(i).trim());
-      break;
-    }
-    inlineParts.push(s.slice(i, mediaStart).trim());
-    i = mediaStart;
-    const openParen = s.indexOf('(', i);
-    const closeParen = s.indexOf(')', openParen);
-    if (openParen === -1 || closeParen === -1) {
-      i++;
-      continue;
-    }
-    const condition = s.slice(openParen, closeParen + 1).trim();
-    const braceStart = s.indexOf('{', closeParen);
-    if (braceStart === -1) {
-      i = closeParen + 1;
-      continue;
-    }
-    let depth = 1;
-    let pos = braceStart + 1;
-    while (pos < s.length && depth > 0) {
-      if (s[pos] === '{') depth++;
-      else if (s[pos] === '}') depth--;
-      pos++;
-    }
-    const content = s.slice(braceStart + 1, pos - 1).trim();
-    mediaBlocks.push({ condition, content });
-    i = pos;
-  }
-
-  const inline = inlineParts.join(' ').replace(/\s+/g, ' ').trim();
-  return { inline, mediaBlocks };
-}
-
-// Добавляет !important к каждому объявлению, чтобы перебить инлайн-стили React (например display: flex у Box)
-function addImportantToDeclarations(css: string): string {
-  return css
-    .split(';')
-    .map((decl) => decl.trim())
-    .filter(Boolean)
-    .map((decl) => (decl.endsWith(' !important') ? decl : `${decl} !important`))
-    .join('; ');
-}
-
-// Собирает CSS для инжекта: @container (по ширине холста), селектор по data-node-id
-// @container срабатывает по ширине обёртки холста, а не окна браузера — так переключатель «Мобильный/Планшет» влияет на стили
-function buildScopedMediaCss(nodeId: string, mediaBlocks: Array<{ condition: string; content: string }>): string {
-  if (mediaBlocks.length === 0) return '';
-  const selector = `[data-craft-node-id="${nodeId}"]`;
-  return mediaBlocks
-    .map(({ condition, content }) => {
-      const contentWithImportant = addImportantToDeclarations(content);
-      return `@container ${condition} { ${selector} { ${contentWithImportant} } }`;
-    })
-    .join('\n');
-}
-
-// Свойства контейнера (Box)
-type BoxStyles = {
-  padding?: number;
-  margin?: number;
-  borderWidth?: number;
-  borderStyle?: 'none' | 'solid' | 'dashed' | 'dotted';
-  borderColor?: string;
-  flexDirection?: 'row' | 'column';
-  alignItems?: 'flex-start' | 'center' | 'flex-end' | 'stretch';
-  justifyContent?: 'flex-start' | 'center' | 'flex-end' | 'space-between' | 'space-around';
-  gap?: number;
-  customCss?: string;
-};
-
-// Один пользовательский компонент — контейнер на холсте
-function Box({
-  children,
-  padding = 16,
-  margin = 0,
-  borderWidth = 1,
-  borderStyle = 'dashed',
-  borderColor = '#ccc',
-  flexDirection = 'column',
-  alignItems = 'stretch',
-  justifyContent = 'flex-start',
-  gap = 8,
-  customCss = '',
-}: { children?: ReactNode } & BoxStyles) {
-  const { connectors: { connect, drag }, selected, id } = useNode((node) => ({
-    selected: node.events.selected,
-    id: node.id,
-  }));
-
-  const border = selected
-    ? selectedOutline
-    : borderStyle === 'none'
-      ? 'none'
-      : `${borderWidth}px ${borderStyle} ${borderColor}`;
-
-  const baseStyle: Record<string, unknown> = {
-    minHeight: 200,
-    padding,
-    margin,
-    border,
-    borderRadius: 4,
-    display: 'flex',
-    flexDirection,
-    alignItems,
-    justifyContent,
-    gap,
-  };
-
-  const { inline: inlineCss, mediaBlocks } = splitMediaQueries(customCss);
-  const customStyle = parseCustomCss(inlineCss);
-  const mediaCss = buildScopedMediaCss(id, mediaBlocks);
-
-  return (
-    <>
-      {mediaCss && <style dangerouslySetInnerHTML={{ __html: mediaCss }} />}
-      <div
-        ref={(ref) => ref && connect(drag(ref))}
-        data-craft-node-id={id}
-        style={{ ...baseStyle, ...customStyle }}
-      >
-        {children}
-      </div>
-    </>
-  );
-}
-Box.craft = {
-  displayName: 'Контейнер',
-  props: {
-    padding: 16,
-    margin: 0,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: '#ccc',
-    flexDirection: 'column',
-    alignItems: 'stretch',
-    justifyContent: 'flex-start',
-    gap: 8,
-    customCss: '',
-  },
-};
-
-// Стили текста (типы для пропсов)
-type TextStyles = {
-  fontSize?: number;
-  fontWeight?: 'normal' | 'bold';
-  color?: string;
-  textAlign?: 'left' | 'center' | 'right';
-};
-
-// Текстовый компонент — можно класть внутрь блока
-function Text({
-  content = 'Текст',
-  fontSize = 14,
-  fontWeight = 'normal',
-  color = '#000000',
-  textAlign = 'left',
-}: { content?: string } & TextStyles) {
-  const { connectors: { connect, drag }, selected } = useNode((node) => ({ selected: node.events.selected }));
-  return (
-    <p
-      ref={(ref) => ref && connect(drag(ref))}
-      style={{
-        margin: '0 0 8px 0',
-        fontSize,
-        fontWeight,
-        color,
-        textAlign,
-        outline: selected ? selectedOutline : 'none',
-        outlineOffset: 2,
-        borderRadius: 2,
-      }}
-    >
-      {content}
-    </p>
-  );
-}
-Text.craft = {
-  displayName: 'Текст',
-  props: {
-    content: 'Текст',
-    fontSize: 14,
-    fontWeight: 'normal',
-    color: '#000000',
-    textAlign: 'left',
-  },
-};
+import { Editor, Frame, Element, useEditor } from '@craftjs/core';
+import { Box, Text } from './components/canvas';
 
 // Ширины viewport по устройствам (px)
 const VIEWPORT_WIDTH = { desktop: null as number | null, tablet: 768, mobile: 375 } as const;
 type ViewportType = keyof typeof VIEWPORT_WIDTH;
 
-// Панель отмены/возврата и переключатель устройств
-function HistoryToolbar({
+type ViewMode = 'constructor' | 'preview';
+
+// Панель отмены/возврата, переключатель устройств, Сохранить JSON и переключатель Конструктор/Превью
+const HistoryToolbar = ({
   viewport,
   setViewport,
+  viewMode,
+  setViewMode,
 }: {
   viewport: ViewportType;
   setViewport: (v: ViewportType) => void;
-}) {
+  viewMode: ViewMode;
+  setViewMode: (v: ViewMode) => void;
+}) => {
   const { canUndo, canRedo, actions, query } = useEditor((_state, q) => ({
     canUndo: q.history.canUndo(),
     canRedo: q.history.canRedo(),
@@ -302,12 +91,20 @@ function HistoryToolbar({
       <button type="button" title="Скачать JSON структуры страницы" onClick={handleSaveJson} style={{ ...deviceStyle(false), borderColor: '#16a34a', color: '#16a34a', background: '#fff' }}>
         Сохранить JSON
       </button>
+      <span style={{ width: 1, height: 20, background: '#eee', marginLeft: 4 }} />
+      <span style={{ fontSize: 12, color: '#666', marginRight: 4 }}>Режим:</span>
+      <button type="button" title="Редактирование" onClick={() => setViewMode('constructor')} style={deviceStyle(viewMode === 'constructor')}>
+        Конструктор
+      </button>
+      <button type="button" title="Просмотр как сайт" onClick={() => setViewMode('preview')} style={deviceStyle(viewMode === 'preview')}>
+        Превью
+      </button>
     </div>
   );
-}
+};
 
 // Палитра — контейнер и текст, перетаскиваемые на холст
-function Toolbox() {
+const Toolbox = () => {
   const { connectors } = useEditor();
   const itemStyle = {
     padding: '12px 16px',
@@ -335,10 +132,10 @@ function Toolbox() {
       </div>
     </div>
   );
-}
+};
 
 // Панель настроек — редактирование содержимого текста при выборе
-function SettingsPanel() {
+const SettingsPanel = () => {
   const { selectedId, actions, query, selectedNodeProps, displayName, isDeletable } = useEditor((state, q) => {
     const id = q.getEvent('selected').first();
     const node = id ? state.nodes[id] : null;
@@ -588,12 +385,13 @@ function SettingsPanel() {
       )}
     </div>
   );
-}
+};
 
 const resolver = { Box, Text };
 
-export default function App() {
+const App = () => {
   const [viewport, setViewport] = useState<ViewportType>('desktop');
+  const [viewMode, setViewMode] = useState<ViewMode>('constructor');
 
   const canvasWidth = VIEWPORT_WIDTH[viewport];
   const canvasWrapperStyle = {
@@ -608,26 +406,46 @@ export default function App() {
     containerType: 'inline-size' as const,
   };
 
+  const previewWrapperStyle = {
+    width: '100%',
+    minHeight: '100vh',
+    background: '#fff',
+    containerType: 'inline-size' as const,
+  };
+
+  const isConstructor = viewMode === 'constructor';
+
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
       <Editor
         resolver={resolver}
-        enabled
+        enabled={isConstructor}
         indicator={{ style: { pointerEvents: 'none' } }}
       >
-        <Toolbox />
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <HistoryToolbar viewport={viewport} setViewport={setViewport} />
-          <div style={{ flex: 1, padding: 24, overflow: 'auto', background: '#fafafa', display: 'flex', justifyContent: 'center' }}>
-          <div style={canvasWrapperStyle}>
-            <Frame>
-              <Element is={Box} canvas />
-            </Frame>
-          </div>
+        {isConstructor && <Toolbox />}
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+          <HistoryToolbar viewport={viewport} setViewport={setViewport} viewMode={viewMode} setViewMode={setViewMode} />
+          <div
+            style={{
+              flex: 1,
+              padding: isConstructor ? 24 : 0,
+              overflow: 'auto',
+              background: isConstructor ? '#fafafa' : '#fff',
+              display: 'flex',
+              justifyContent: isConstructor ? 'center' : 'stretch',
+            }}
+          >
+            <div style={isConstructor ? canvasWrapperStyle : previewWrapperStyle}>
+              <Frame>
+                <Element is={Box} canvas />
+              </Frame>
+            </div>
           </div>
         </div>
-        <SettingsPanel />
+        {isConstructor && <SettingsPanel />}
       </Editor>
     </div>
   );
-}
+};
+
+export default App;
