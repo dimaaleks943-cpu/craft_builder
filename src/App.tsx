@@ -190,6 +190,7 @@ const CanvasWithPreview = ({
   canvasWrapperStyle,
   previewWrapperStyle,
   pages,
+  setPages,
   currentPageId,
   setCurrentPageId,
 }: {
@@ -197,10 +198,11 @@ const CanvasWithPreview = ({
   canvasWrapperStyle: React.CSSProperties;
   previewWrapperStyle: React.CSSProperties;
   pages: PagesState;
+  setPages: React.Dispatch<React.SetStateAction<PagesState>>;
   currentPageId: string;
   setCurrentPageId: (id: string) => void;
 }) => {
-  const { actions } = useEditor();
+  const { actions, query } = useEditor();
 
   const handlePreviewClick = useCallback(
     (e: React.MouseEvent) => {
@@ -217,11 +219,16 @@ const CanvasWithPreview = ({
       e.stopPropagation();
       const [targetId] = entry;
       if (targetId === currentPageId) return;
-      const targetJson = pages[targetId]?.json ?? EMPTY_PAGE_JSON;
+      // Сначала сохраняем текущую страницу в pages, иначе правки на ней потеряются
+      const serialized = query.serialize();
+      setPages((prev) => ({
+        ...prev,
+        [currentPageId]: { ...prev[currentPageId], json: serialized },
+      }));
       setCurrentPageId(targetId);
-      actions.deserialize(targetJson);
+      actions.deserialize(pages[targetId]?.json ?? EMPTY_PAGE_JSON);
     },
-    [isConstructor, pages, currentPageId, setCurrentPageId, actions]
+    [isConstructor, pages, currentPageId, setPages, setCurrentPageId, query, actions]
   );
 
   return (
@@ -835,6 +842,7 @@ const App = () => {
               canvasWrapperStyle={canvasWrapperStyle}
               previewWrapperStyle={previewWrapperStyle}
               pages={pages}
+              setPages={setPages}
               currentPageId={currentPageId}
               setCurrentPageId={setCurrentPageId}
             />

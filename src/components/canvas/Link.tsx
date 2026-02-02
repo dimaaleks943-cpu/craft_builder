@@ -1,4 +1,4 @@
-import { useNode } from '@craftjs/core';
+import { useNode, useEditor } from '@craftjs/core';
 import { parseCustomCss, splitMediaQueries, buildScopedMediaCss, escapeCssForStyleTag } from './cssUtils';
 
 const selectedOutline = '2px solid #2563eb';
@@ -32,6 +32,7 @@ export const Link = ({
     selected: node.events.selected,
     id: node.id,
   }));
+  const enabled = useEditor((state) => state.options.enabled);
 
   const { inline: inlineCss, mediaBlocks } = splitMediaQueries(customCss);
   const customStyle = parseCustomCss(inlineCss);
@@ -62,7 +63,7 @@ export const Link = ({
         rel={target === '_blank' ? 'noopener noreferrer' : undefined}
         data-craft-node-id={id}
         style={{ ...baseStyle, ...customStyle }}
-        onClick={(e) => (href === '#' ? e.preventDefault() : undefined)}
+        onClick={(e) => (enabled || href === '#' ? e.preventDefault() : undefined)}
       >
         {content}
       </a>
