@@ -1,4 +1,6 @@
 import { useNode } from '@craftjs/core';
+import { useContext } from 'react';
+import { ProductContext, getProductFieldValue } from '../../contexts/ProductContext';
 
 const selectedOutline = '2px solid #2563eb';
 
@@ -7,6 +9,8 @@ export type TextStyles = {
   fontWeight?: 'normal' | 'bold';
   color?: string;
   textAlign?: 'left' | 'center' | 'right';
+  /** Путь к полю товара: name, price, description, image.urls.small.url и т.д. */
+  productField?: string;
 };
 
 export const Text = ({
@@ -15,8 +19,14 @@ export const Text = ({
   fontWeight = 'normal',
   color = '#000000',
   textAlign = 'left',
+  productField = '',
 }: { content?: string } & TextStyles) => {
   const { connectors: { connect, drag }, selected } = useNode((node) => ({ selected: node.events.selected }));
+  const product = useContext(ProductContext);
+  const displayValue = productField && product
+    ? getProductFieldValue(product, productField)
+    : null;
+  const text = displayValue != null ? String(displayValue) : content;
   return (
     <p
       ref={(ref) => ref && connect(drag(ref))}
@@ -31,7 +41,7 @@ export const Text = ({
         borderRadius: 2,
       }}
     >
-      {content}
+      {text}
     </p>
   );
 };
@@ -44,5 +54,6 @@ Text.craft = {
     fontWeight: 'normal',
     color: '#000000',
     textAlign: 'left',
+    productField: '',
   },
 };

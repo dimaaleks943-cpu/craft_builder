@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Editor, Frame, Element, useEditor } from '@craftjs/core';
-import { Box, Text, Link } from './components/canvas';
+import { Box, Text, Link, Image, ProductShowcase } from './components/canvas';
+import { EditorModeContext } from './contexts/EditorModeContext';
 
 // Состояние одной страницы: name — для вкладки, slug — путь (product → ссылка /product)
 type PageRecord = { name: string; slug: string; json: string | null };
@@ -232,14 +233,16 @@ const CanvasWithPreview = ({
   );
 
   return (
-    <div
-      style={isConstructor ? canvasWrapperStyle : previewWrapperStyle}
-      onClick={handlePreviewClick}
-    >
-      <Frame>
-        <Element is={Box} canvas />
-      </Frame>
-    </div>
+    <EditorModeContext.Provider value={isConstructor}>
+      <div
+        style={isConstructor ? canvasWrapperStyle : previewWrapperStyle}
+        onClick={handlePreviewClick}
+      >
+        <Frame>
+          <Element is={Box} canvas />
+        </Frame>
+      </div>
+    </EditorModeContext.Provider>
   );
 };
 
@@ -398,32 +401,75 @@ const Toolbox = () => {
         >
           Ссылка
         </div>
+        <div
+          ref={(ref) => ref && connectors.create(ref, <Element is={Image} />)}
+          style={toolboxItemStyle}
+        >
+          Картинка
+        </div>
+      </div>
+
+      <div style={toolboxSectionStyle}>
+        <div style={toolboxSectionTitleStyle}>Секции</div>
+        <div
+          ref={(ref) => ref && connectors.create(ref, <Element is={ProductShowcase} />)}
+          style={toolboxItemStyle}
+        >
+          Витрина товаров
+        </div>
       </div>
     </div>
   );
 };
 
+// Поля товара для привязки в витрине (путь к значению в объекте товара)
+const PRODUCT_FIELD_OPTIONS: { value: string; label: string }[] = [
+  { value: '', label: '— Не привязано' },
+  { value: 'name', label: 'Название (name)' },
+  { value: 'description', label: 'Описание (description)' },
+  { value: 'price', label: 'Цена (price)' },
+  { value: 'image.urls.small.url', label: 'Фото малое (image.urls.small.url)' },
+  { value: 'image.urls.original.url', label: 'Фото большое (image.urls.original.url)' },
+  { value: 'brand.name', label: 'Бренд (brand.name)' },
+  { value: 'slug', label: 'Slug (slug)' },
+];
+
 // Панель настроек — редактирование содержимого текста при выборе
 const SettingsPanel = () => {
-  const { selectedId, actions, query, selectedNodeProps, displayName, isDeletable } = useEditor((state, q) => {
+  const { selectedId, actions, query, selectedNodeProps, displayName, isDeletable, isInsideShowcase } = useEditor((state, q) => {
     const id = q.getEvent('selected').first();
     const node = id ? state.nodes[id] : null;
     const props = node?.data?.props ?? {};
+    let isInsideShowcase = false;
+    if (id) {
+      try {
+        const ancestors = q.node(id).ancestors();
+        isInsideShowcase = ancestors.some((ancId: string) => state.nodes[ancId]?.data?.displayName === 'Витрина');
+      } catch {
+        // ignore
+      }
+    }
     return {
       selectedId: id,
       selectedNodeProps: props,
       displayName: node?.data?.displayName ?? null,
       isDeletable: id ? q.node(id).isDeletable() : false,
+      isInsideShowcase,
     };
   });
 
   const isText = displayName === 'Текст';
   const isBox = displayName === 'Контейнер';
   const isLink = displayName === 'Ссылка';
+  const isImage = displayName === 'Картинка';
+  const isShowcase = displayName === 'Витрина';
   const textProps = isText ? (selectedNodeProps as Record<string, unknown>) : {};
   const boxProps = isBox ? (selectedNodeProps as Record<string, unknown>) : {};
   const linkProps = isLink ? (selectedNodeProps as Record<string, unknown>) : {};
+  const imageProps = isImage ? (selectedNodeProps as Record<string, unknown>) : {};
+  const showcaseProps = isShowcase ? (selectedNodeProps as Record<string, unknown>) : {};
   const contentFromStore = isText ? String(textProps.content ?? '') : isLink ? String(linkProps.content ?? '') : '';
+  const setImageProp = (key: string, value: unknown) => setProp(key, value);
 
   const [localContent, setLocalContent] = useState(contentFromStore);
   useEffect(() => {
@@ -436,6 +482,7 @@ const SettingsPanel = () => {
   const setTextProp = <K extends keyof typeof textProps>(key: K, value: (typeof textProps)[K]) => setProp(key, value);
   const setBoxProp = (key: string, value: unknown) => setProp(key, value);
   const setLinkProp = (key: string, value: unknown) => setProp(key, value);
+  const setShowcaseProp = (key: string, value: unknown) => setProp(key, value);
 
   const labelStyle = { display: 'block' as const, fontSize: 11, color: '#666', marginBottom: 4, marginTop: 12 };
   const inputStyle = {
@@ -537,6 +584,22 @@ const SettingsPanel = () => {
             <option value="center">По центру</option>
             <option value="right">По правому краю</option>
           </select>
+
+          {isInsideShowcase && (
+            <>
+              <label style={{ ...labelStyle, marginTop: 16, color: '#2563eb', fontWeight: 600 }}>Витрина: привязка к полю товара</label>
+              <select
+                value={String(textProps.productField ?? '')}
+                onChange={(e) => setTextProp('productField', e.target.value)}
+                style={inputStyle}
+              >
+                {PRODUCT_FIELD_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>Выберите поле — этот текст будет показывать его значение для каждого товара</div>
+            </>
+          )}
         </div>
           ) : isLink ? (
         <div>
@@ -653,6 +716,115 @@ const SettingsPanel = () => {
               fontSize: 12,
             }}
           />
+        </div>
+          ) : isImage ? (
+        <div>
+          <div style={{ fontSize: 12, color: '#2563eb', fontWeight: 500, marginBottom: 8 }}>Картинка (выбран на холсте)</div>
+
+          <label style={{ ...labelStyle, marginTop: 0 }}>URL картинки</label>
+          <input
+            type="text"
+            placeholder="https://..."
+            value={String(imageProps.src ?? '')}
+            onChange={(e) => setImageProp('src', e.target.value)}
+            style={inputStyle}
+          />
+
+          {isInsideShowcase && (
+            <>
+              <label style={{ ...labelStyle, marginTop: 16, color: '#2563eb', fontWeight: 600 }}>Витрина: привязка к полю товара</label>
+              <select
+                value={String(imageProps.productField ?? '')}
+                onChange={(e) => setImageProp('productField', e.target.value)}
+                style={inputStyle}
+              >
+                {PRODUCT_FIELD_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>Например: image.urls.small.url — фото товара</div>
+            </>
+          )}
+
+          <label style={labelStyle}>Подпись (alt)</label>
+          <input
+            type="text"
+            value={String(imageProps.alt ?? '')}
+            onChange={(e) => setImageProp('alt', e.target.value)}
+            style={inputStyle}
+          />
+
+          <label style={labelStyle}>Обрезка (object-fit)</label>
+          <select
+            value={String(imageProps.objectFit ?? 'cover')}
+            onChange={(e) => setImageProp('objectFit', e.target.value)}
+            style={inputStyle}
+          >
+            <option value="cover">Обложка (cover)</option>
+            <option value="contain">Вписать (contain)</option>
+            <option value="fill">Заполнить (fill)</option>
+            <option value="none">Нет</option>
+          </select>
+        </div>
+          ) : isShowcase ? (
+        <div>
+          <div style={{ fontSize: 12, color: '#2563eb', fontWeight: 500, marginBottom: 8 }}>Витрина товаров (выбран на холсте)</div>
+
+          <label style={{ ...labelStyle, marginTop: 0 }}>URL API товаров</label>
+          <input
+            type="text"
+            placeholder="https://dev-api.cezyo.com/v3/client/catalog/products?limit=30&filter=%7B%7D"
+            value={String(showcaseProps.apiUrl ?? '')}
+            onChange={(e) => setShowcaseProp('apiUrl', e.target.value)}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>GET-запрос, ответ: объект с полем data — массив товаров (name, price, image.urls.small.url)</div>
+
+          <label style={labelStyle}>Колонок в сетке</label>
+          <select
+            value={showcaseProps.columns ?? 3}
+            onChange={(e) => setShowcaseProp('columns', Number(e.target.value) as 1 | 2 | 3 | 4 | 5)}
+            style={inputStyle}
+          >
+            {[1, 2, 3, 4, 5].map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+
+          <label style={labelStyle}>Лимит товаров (limit)</label>
+          <input
+            type="number"
+            min={1}
+            max={100}
+            value={showcaseProps.limit ?? 30}
+            onChange={(e) => setShowcaseProp('limit', Number(e.target.value) || 30)}
+            style={inputStyle}
+          />
+
+          <label style={{ ...labelStyle, marginTop: 16 }}>Подзагрузка при скролле (только в превью)</label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14 }}>
+            <input
+              type="checkbox"
+              checked={Boolean(showcaseProps.infiniteScroll)}
+              onChange={(e) => setShowcaseProp('infiniteScroll', e.target.checked)}
+            />
+            Включить подзагрузку при скролле
+          </label>
+          {showcaseProps.infiniteScroll && (
+            <>
+              <label style={labelStyle}>Параметр запроса для пагинации</label>
+              <input
+                type="text"
+                placeholder="offset"
+                value={String(showcaseProps.infiniteScrollParam ?? 'offset')}
+                onChange={(e) => setShowcaseProp('infiniteScrollParam', e.target.value.trim() || 'offset')}
+                style={inputStyle}
+              />
+              <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+                В запрос подставляется значение «сколько товаров уже загружено» (например offset=30, offset=60)
+              </div>
+            </>
+          )}
         </div>
           ) : isBox ? (
         <div>
@@ -775,7 +947,14 @@ const SettingsPanel = () => {
   );
 };
 
-const resolver = { Box, Text, Link };
+// Строковые ключи обязательны: при минификации имена переменных (Box, ProductShowcase) меняются на "a", "ke" и т.д., и Craft перестаёт находить компонент в resolver
+const resolver: Record<string, React.ComponentType<any>> = {
+  'Box': Box,
+  'Text': Text,
+  'Link': Link,
+  'Image': Image,
+  'ProductShowcase': ProductShowcase,
+};
 
 const INITIAL_PAGE_ID = 'page-1';
 
