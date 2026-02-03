@@ -65,6 +65,14 @@ export type ProductShowcaseStyles = {
   infiniteScroll?: boolean;
   /** Имя query-параметра для пагинации (например offset) */
   infiniteScrollParam?: string;
+  /** Подсказка: пример путей к полям из ответа API (формируется автоматически по первому товару) */
+  sampleFields?: string[];
+  /** Делать ли карточки товаров ссылками на страницу продукта */
+  cardLinkEnabled?: boolean;
+  /** Slug страницы продукта (например product) */
+  cardLinkPageSlug?: string;
+  /** Поле товара для формирования URL (например slug или product_variation_id) */
+  cardLinkField?: string;
 };
 
 /** Добавляет или заменяет query-параметр в URL */
@@ -77,6 +85,24 @@ function setQueryParam(url: string, key: string, value: number): string {
   if (replaced !== url) return replaced;
   const hasQuery = url.includes('?');
   return url + (hasQuery ? '&' : '?') + k + '=' + v;
+}
+
+/** Собирает пути к полям (name, price, image.urls.small.url и т.п.) из объекта товара */
+function collectFieldPaths(obj: unknown, prefix = '', depth = 0, acc?: Set<string>): string[] {
+  const set = acc ?? new Set<string>();
+  if (!obj || typeof obj !== 'object' || depth > 3) {
+    return acc ? [] : Array.from(set).sort();
+  }
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (value == null || typeof value !== 'object') {
+      set.add(path);
+    }
+    if (value && typeof value === 'object') {
+      collectFieldPaths(value, path, depth + 1, set);
+    }
+  }
+  return acc ? [] : Array.from(set).sort();
 }
 
 // Рендер шаблона карточки из сериализованного дерева (для превью — N карточек)
@@ -145,8 +171,11 @@ export const ProductShowcase = ({
   limit = 30,
   infiniteScroll = false,
   infiniteScrollParam = 'offset',
+  cardLinkEnabled = false,
+  cardLinkPageSlug = 'product',
+  cardLinkField = 'slug',
 }: ProductShowcaseStyles) => {
-  const { connectors: { connect, drag }, selected, id } = useNode((node) => ({
+  const { connectors: { connect, drag }, selected, id, actions: nodeActions } = useNode((node) => ({
     selected: node.events.selected,
     id: node.id,
   }));
@@ -188,8 +217,19 @@ export const ProductShowcase = ({
       })
       .then((body: ApiResponse) => {
         const list = extractList(body);
-        setProducts(list.map((p) => normalizeApiProduct(p as Record<string, unknown>)));
+        const normalized = list.map((p) => normalizeApiProduct(p as Record<string, unknown>));
+        setProducts(normalized);
         setHasMore(list.length >= limit);
+        if (list.length > 0) {
+          const fields = collectFieldPaths(list[0]);
+          nodeActions.setProp((props: Record<string, unknown>) => {
+            (props as ProductShowcaseStyles).sampleFields = fields;
+          });
+        } else {
+          nodeActions.setProp((props: Record<string, unknown>) => {
+            (props as ProductShowcaseStyles).sampleFields = [];
+          });
+        }
       })
       .catch((err) => {
         setError(err?.message || 'Ошибка загрузки');
@@ -260,6 +300,17 @@ export const ProductShowcase = ({
   const showConstructorGrid = isConstructor && !loading && !error;
   /** В конструкторе показываем только первую порцию (limit), чтобы не скроллить лишнее при настройке страницы */
   const productsInConstructor = products.slice(0, limit);
+
+  const buildCardHref = (p: ProductItem): string | null => {
+    if (!cardLinkEnabled || !cardLinkPageSlug) return null;
+    const value =
+      (cardLinkField && getProductFieldValue(p, cardLinkField)) ??
+      p.slug ??
+      p.product_variation_id;
+    if (value == null) return null;
+    const base = cardLinkPageSlug.replace(/^\//, '').split('/')[0] || 'product';
+    return `/${base}/${encodeURIComponent(String(value))}`;
+  };
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -343,9 +394,24 @@ export const ProductShowcase = ({
       {showRepeatedCards &&
         products.map((p, i) => (
           <div key={p.product_variation_id ?? p.slug ?? i} style={cardStyle}>
-            <ProductContext.Provider value={p as ProductItem}>
-              <TemplateRenderer rootIds={templateRootIds} nodes={templateNodes} resolver={TEMPLATE_RESOLVER} />
-            </ProductContext.Provider>
+            {(() => {
+              const href = buildCardHref(p as ProductItem);
+              const inner = (
+                <ProductContext.Provider value={p as ProductItem}>
+                  <TemplateRenderer rootIds={templateRootIds} nodes={templateNodes} resolver={TEMPLATE_RESOLVER} />
+                </ProductContext.Provider>
+              );
+              return href && !isConstructor ? (
+                <a
+                  href={href}
+                  style={{ display: 'block', textDecoration: 'none', color: 'inherit' }}
+                >
+                  {inner}
+                </a>
+              ) : (
+                inner
+              );
+            })()}
           </div>
         ))}
       {showRepeatedCards && loadingMore && (
@@ -368,5 +434,9 @@ ProductShowcase.craft = {
     limit: 30,
     infiniteScroll: false,
     infiniteScrollParam: 'offset',
+     sampleFields: [],
+     cardLinkEnabled: false,
+     cardLinkPageSlug: 'product',
+     cardLinkField: 'slug',
   },
 };

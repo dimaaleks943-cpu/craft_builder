@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { Editor, Frame, Element, useEditor } from '@craftjs/core';
 import { Box, Text, Link, Image, ProductShowcase } from './components/canvas';
 import { EditorModeContext } from './contexts/EditorModeContext';
@@ -6,31 +6,14 @@ import { EditorModeContext } from './contexts/EditorModeContext';
 // Состояние одной страницы: name — для вкладки, slug — путь (product → ссылка /product)
 type PageRecord = { name: string; slug: string; json: string | null };
 type PagesState = Record<string, PageRecord>;
+/** Формат файла при сохранении/загрузке: все страницы */
+type SitePagesFile = { pages: PagesState };
+const INITIAL_PAGE_JSON = `{"ROOT":{"type":{"resolvedName":"Box"},"isCanvas":true,"props":{"padding":16,"margin":0,"borderWidth":1,"borderStyle":"dashed","borderColor":"#ccc","flexDirection":"column","alignItems":"stretch","justifyContent":"flex-start","gap":8,"customCss":""},"displayName":"Контейнер","custom":{},"hidden":false,"nodes":["aPhu18Iicn","N03NwJIH0I"],"linkedNodes":{}},"aPhu18Iicn":{"type":{"resolvedName":"Text"},"isCanvas":false,"props":{"content":"Текст","fontSize":14,"fontWeight":"normal","color":"#000000","textAlign":"left","productField":""},"displayName":"Текст","custom":{},"parent":"ROOT","hidden":false,"nodes":[],"linkedNodes":{}},"N03NwJIH0I":{"type":{"resolvedName":"Link"},"isCanvas":false,"props":{"href":"x","target":"_self","content":"Ссылка","fontSize":14,"fontWeight":"normal","color":"#2563eb","textAlign":"left","textDecoration":"underline","fontStyle":"normal","customCss":""},"displayName":"Ссылка","custom":{},"parent":"ROOT","hidden":false,"nodes":[],"linkedNodes":{}}}`;
+// Пустая страница: один корневой Box без детей (валидный Craft.js JSON). Fallback, когда у страницы нет сохранённого json.
+const EMPTY_PAGE_JSON = {"ROOT":{"type":{"resolvedName":"Box"},"isCanvas":true,"props":{"padding":16,"margin":0,"borderWidth":1,"borderStyle":"dashed","borderColor":"#ccc","flexDirection":"column","alignItems":"stretch","justifyContent":"flex-start","gap":8,"customCss":""},"displayName":"Контейнер","custom":{},"hidden":false,"nodes":["BogS102Ql_"],"linkedNodes":{}},"BogS102Ql_":{"type":{"resolvedName":"Link"},"isCanvas":false,"props":{"href":"x","target":"_self","content":"Ссылка","fontSize":14,"fontWeight":"normal","color":"#2563eb","textAlign":"left","textDecoration":"underline","fontStyle":"normal","customCss":""},"displayName":"Ссылка","custom":{},"parent":"ROOT","hidden":false,"nodes":[],"linkedNodes":{}}};
 
-// Пустая страница: один корневой Box без детей (валидный Craft.js JSON)
-const EMPTY_PAGE_JSON = JSON.stringify({
-  ROOT: {
-    type: { resolvedName: 'Box' },
-    isCanvas: true,
-    props: {
-      padding: 16,
-      margin: 0,
-      borderWidth: 1,
-      borderStyle: 'dashed',
-      borderColor: '#ccc',
-      flexDirection: 'column',
-      alignItems: 'stretch',
-      justifyContent: 'flex-start',
-      gap: 8,
-      customCss: '',
-    },
-    displayName: 'Контейнер',
-    custom: {},
-    hidden: false,
-    nodes: [],
-    linkedNodes: {},
-  },
-});
+// Шаблон для новых страниц: чистый холст (только корневой Box). Используется только при создании страницы.
+const NEW_PAGE_JSON = {"ROOT":{"type":{"resolvedName":"Box"},"isCanvas":true,"props":{"padding":16,"margin":0,"borderWidth":1,"borderStyle":"dashed","borderColor":"#ccc","flexDirection":"column","alignItems":"stretch","justifyContent":"flex-start","gap":8,"customCss":""},"displayName":"Контейнер","custom":{},"hidden":false,"nodes":["new_page_box"],"linkedNodes":{}},"new_page_box":{"type":{"resolvedName":"Box"},"isCanvas":true,"props":{"padding":16,"margin":0,"borderWidth":0,"borderStyle":"solid","borderColor":"#ccc","flexDirection":"column","alignItems":"stretch","justifyContent":"flex-start","gap":8,"customCss":""},"displayName":"Контейнер","custom":{},"hidden":false,"nodes":[],"linkedNodes":{},"parent":"ROOT"}};
 
 // Модалка: имя страницы (slug) для URL, например product → /product
 const AddPageModal = ({
@@ -145,10 +128,10 @@ const PageSwitcher = ({
       setPages((prev) => ({
         ...prev,
         [currentPageId]: { ...prev[currentPageId], json: serialized },
-        [newId]: { name: normalizedSlug, slug: normalizedSlug, json: EMPTY_PAGE_JSON },
+        [newId]: { name: normalizedSlug, slug: normalizedSlug, json: NEW_PAGE_JSON },
       }));
       setCurrentPageId(newId);
-      actions.deserialize(EMPTY_PAGE_JSON);
+      queueMicrotask(() => actions.deserialize(NEW_PAGE_JSON));
     },
     [currentPageId, setPages, setCurrentPageId, query, actions]
   );
@@ -205,6 +188,12 @@ const CanvasWithPreview = ({
 }) => {
   const { actions, query } = useEditor();
 
+  // При первом открытии подгружаем шаблон текущей страницы (INITIAL_PAGE_JSON), иначе холст остаётся пустым
+  useEffect(() => {
+    const initialJson = pages[currentPageId]?.json ?? EMPTY_PAGE_JSON;
+    actions.deserialize(typeof initialJson === 'string' ? initialJson : JSON.stringify(initialJson));
+  }, []);
+
   const handlePreviewClick = useCallback(
     (e: React.MouseEvent) => {
       if (isConstructor) return;
@@ -252,33 +241,84 @@ type ViewportType = keyof typeof VIEWPORT_WIDTH;
 
 type ViewMode = 'constructor' | 'preview';
 
-// Панель отмены/возврата, переключатель устройств, Сохранить JSON и переключатель Конструктор/Превью
+// Панель отмены/возврата, переключатель устройств, Сохранить/Загрузить JSON и переключатель Конструктор/Превью
 const HistoryToolbar = ({
   viewport,
   setViewport,
   viewMode,
   setViewMode,
+  pages,
+  setPages,
+  currentPageId,
+  setCurrentPageId,
 }: {
   viewport: ViewportType;
   setViewport: (v: ViewportType) => void;
   viewMode: ViewMode;
   setViewMode: (v: ViewMode) => void;
+  pages: PagesState;
+  setPages: React.Dispatch<React.SetStateAction<PagesState>>;
+  currentPageId: string;
+  setCurrentPageId: (id: string) => void;
 }) => {
   const { canUndo, canRedo, actions, query } = useEditor((_state, q) => ({
     canUndo: q.history.canUndo(),
     canRedo: q.history.canRedo(),
   }));
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Сохранить все страницы в один JSON (текущая — из редактора, остальные — из state)
   const handleSaveJson = () => {
-    const json = query.serialize();
-    const blob = new Blob([json], { type: 'application/json' });
+    const exportPages: PagesState = {};
+    for (const [id, p] of Object.entries(pages)) {
+      const json =
+        id === currentPageId
+          ? query.serialize()
+          : typeof p.json === 'string'
+            ? p.json
+            : p.json == null
+              ? null
+              : JSON.stringify(p.json);
+      exportPages[id] = { name: p.name, slug: p.slug, json };
+    }
+    const data: SitePagesFile = { pages: exportPages };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'page-structure.json';
+    a.download = 'site-pages.json';
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  // Загрузить JSON со всеми страницами и показать первую
+  const handleLoadJson = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const text = reader.result as string;
+          const data = JSON.parse(text) as SitePagesFile;
+          if (!data?.pages || typeof data.pages !== 'object') return;
+          const ids = Object.keys(data.pages);
+          if (ids.length === 0) return;
+          setPages(data.pages);
+          setCurrentPageId(ids[0]);
+          const firstJson = data.pages[ids[0]]?.json;
+          const toDeserialize =
+            firstJson == null ? EMPTY_PAGE_JSON : typeof firstJson === 'string' ? firstJson : JSON.stringify(firstJson);
+          actions.deserialize(toDeserialize);
+        } catch (_) {
+          /* ignore */
+        }
+        e.target.value = '';
+      };
+      reader.readAsText(file);
+    },
+    [setPages, setCurrentPageId, actions]
+  );
 
   const btnStyle = (disabled: boolean) => ({
     padding: '8px 12px',
@@ -332,8 +372,18 @@ const HistoryToolbar = ({
         Мобильный
       </button>
       <span style={{ width: 1, height: 20, background: '#eee', marginLeft: 4 }} />
-      <button type="button" title="Скачать JSON структуры страницы" onClick={handleSaveJson} style={{ ...deviceStyle(false), borderColor: '#16a34a', color: '#16a34a', background: '#fff' }}>
+      <button type="button" title="Скачать JSON всех страниц" onClick={handleSaveJson} style={{ ...deviceStyle(false), borderColor: '#16a34a', color: '#16a34a', background: '#fff' }}>
         Сохранить JSON
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        onChange={handleLoadJson}
+      />
+      <button type="button" title="Загрузить JSON со всеми страницами" onClick={() => fileInputRef.current?.click()} style={{ ...deviceStyle(false), borderColor: '#0ea5e9', color: '#0ea5e9', background: '#fff' }}>
+        Загрузить JSON
       </button>
       <span style={{ width: 1, height: 20, background: '#eee', marginLeft: 4 }} />
       <span style={{ fontSize: 12, color: '#666', marginRight: 4 }}>Режим:</span>
@@ -422,29 +472,27 @@ const Toolbox = () => {
   );
 };
 
-// Поля товара для привязки в витрине (путь к значению в объекте товара)
-const PRODUCT_FIELD_OPTIONS: { value: string; label: string }[] = [
-  { value: '', label: '— Не привязано' },
-  { value: 'name', label: 'Название (name)' },
-  { value: 'description', label: 'Описание (description)' },
-  { value: 'price', label: 'Цена (price)' },
-  { value: 'image.urls.small.url', label: 'Фото малое (image.urls.small.url)' },
-  { value: 'image.urls.original.url', label: 'Фото большое (image.urls.original.url)' },
-  { value: 'brand.name', label: 'Бренд (brand.name)' },
-  { value: 'slug', label: 'Slug (slug)' },
-];
-
 // Панель настроек — редактирование содержимого текста при выборе
 const SettingsPanel = () => {
-  const { selectedId, actions, query, selectedNodeProps, displayName, isDeletable, isInsideShowcase } = useEditor((state, q) => {
+  const { selectedId, actions, query, selectedNodeProps, displayName, isDeletable, isInsideShowcase, showcaseFields } = useEditor((state, q) => {
     const id = q.getEvent('selected').first();
     const node = id ? state.nodes[id] : null;
     const props = node?.data?.props ?? {};
     let isInsideShowcase = false;
+    let showcaseFields: string[] = [];
     if (id) {
       try {
         const ancestors = q.node(id).ancestors();
-        isInsideShowcase = ancestors.some((ancId: string) => state.nodes[ancId]?.data?.displayName === 'Витрина');
+        const showcaseId = ancestors.find((ancId: string) => state.nodes[ancId]?.data?.displayName === 'Витрина');
+        isInsideShowcase = Boolean(showcaseId);
+        if (showcaseId) {
+          const showcaseNode = state.nodes[showcaseId];
+          const sProps = (showcaseNode?.data?.props ?? {}) as Record<string, unknown>;
+          const sample = sProps.sampleFields;
+          if (Array.isArray(sample)) {
+            showcaseFields = sample as string[];
+          }
+        }
       } catch {
         // ignore
       }
@@ -455,6 +503,7 @@ const SettingsPanel = () => {
       displayName: node?.data?.displayName ?? null,
       isDeletable: id ? q.node(id).isDeletable() : false,
       isInsideShowcase,
+      showcaseFields,
     };
   });
 
@@ -469,7 +518,6 @@ const SettingsPanel = () => {
   const imageProps = isImage ? (selectedNodeProps as Record<string, unknown>) : {};
   const showcaseProps = isShowcase ? (selectedNodeProps as Record<string, unknown>) : {};
   const contentFromStore = isText ? String(textProps.content ?? '') : isLink ? String(linkProps.content ?? '') : '';
-  const setImageProp = (key: string, value: unknown) => setProp(key, value);
 
   const [localContent, setLocalContent] = useState(contentFromStore);
   useEffect(() => {
@@ -479,6 +527,7 @@ const SettingsPanel = () => {
   const setProp = (key: string, value: unknown) => {
     if (selectedId) actions.setProp(selectedId, (props) => { (props as Record<string, unknown>)[key] = value; });
   };
+  const setImageProp = (key: string, value: unknown) => setProp(key, value);
   const setTextProp = <K extends keyof typeof textProps>(key: K, value: (typeof textProps)[K]) => setProp(key, value);
   const setBoxProp = (key: string, value: unknown) => setProp(key, value);
   const setLinkProp = (key: string, value: unknown) => setProp(key, value);
@@ -587,17 +636,25 @@ const SettingsPanel = () => {
 
           {isInsideShowcase && (
             <>
-              <label style={{ ...labelStyle, marginTop: 16, color: '#2563eb', fontWeight: 600 }}>Витрина: привязка к полю товара</label>
-              <select
+              <label style={{ ...labelStyle, marginTop: 16, color: '#2563eb', fontWeight: 600 }}>Витрина: путь к полю товара</label>
+              <input
+                type="text"
+                placeholder="name, price, image.urls.small.url"
                 value={String(textProps.productField ?? '')}
                 onChange={(e) => setTextProp('productField', e.target.value)}
                 style={inputStyle}
-              >
-                {PRODUCT_FIELD_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-              <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>Выберите поле — этот текст будет показывать его значение для каждого товара</div>
+                title={
+                  showcaseFields && showcaseFields.length
+                    ? `Примеры полей: ${showcaseFields.slice(0, 20).join(', ')}${showcaseFields.length > 20 ? ' …' : ''}`
+                    : 'Путь к полю из объекта товара (например name или image.urls.small.url)'
+                }
+              />
+              {showcaseFields && showcaseFields.length > 0 && (
+                <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+                  Примеры полей из ответа: {showcaseFields.slice(0, 5).join(', ')}
+                  {showcaseFields.length > 5 ? ' …' : ''}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -733,15 +790,18 @@ const SettingsPanel = () => {
           {isInsideShowcase && (
             <>
               <label style={{ ...labelStyle, marginTop: 16, color: '#2563eb', fontWeight: 600 }}>Витрина: привязка к полю товара</label>
-              <select
+              <input
+                type="text"
+                placeholder="image.urls.small.url"
                 value={String(imageProps.productField ?? '')}
                 onChange={(e) => setImageProp('productField', e.target.value)}
                 style={inputStyle}
-              >
-                {PRODUCT_FIELD_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
+                title={
+                  showcaseFields && showcaseFields.length
+                    ? `Примеры полей: ${showcaseFields.slice(0, 20).join(', ')}${showcaseFields.length > 20 ? ' …' : ''}`
+                    : 'Путь к полю из объекта товара (например image.urls.small.url)'
+                }
+              />
               <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>Например: image.urls.small.url — фото товара</div>
             </>
           )}
@@ -823,6 +883,48 @@ const SettingsPanel = () => {
               <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
                 В запрос подставляется значение «сколько товаров уже загружено» (например offset=30, offset=60)
               </div>
+            </>
+          )}
+
+          <label style={{ ...labelStyle, marginTop: 16 }}>Карточка как ссылка</label>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', fontSize: 14 }}>
+            <input
+              type="checkbox"
+              checked={Boolean(showcaseProps.cardLinkEnabled)}
+              onChange={(e) => setShowcaseProp('cardLinkEnabled', e.target.checked)}
+            />
+            Сделать карточки товара ссылками
+          </label>
+          {showcaseProps.cardLinkEnabled && (
+            <>
+              <label style={labelStyle}>Страница продукта (slug)</label>
+              <input
+                type="text"
+                placeholder="product"
+                value={String(showcaseProps.cardLinkPageSlug ?? 'product')}
+                onChange={(e) => setShowcaseProp('cardLinkPageSlug', e.target.value.trim() || 'product')}
+                style={inputStyle}
+              />
+
+              <label style={labelStyle}>Поле товара для URL</label>
+              <input
+                type="text"
+                placeholder="slug или product_variation_id"
+                value={String(showcaseProps.cardLinkField ?? 'slug')}
+                onChange={(e) => setShowcaseProp('cardLinkField', e.target.value)}
+                style={inputStyle}
+                title={
+                  showcaseFields && showcaseFields.length
+                    ? `Примеры полей: ${showcaseFields.slice(0, 20).join(', ')}${showcaseFields.length > 20 ? ' …' : ''}`
+                    : 'Путь к полю из объекта товара (например slug или product_variation_id)'
+                }
+              />
+              {showcaseFields && showcaseFields.length > 0 && (
+                <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+                  Примеры полей из ответа: {showcaseFields.slice(0, 5).join(', ')}
+                  {showcaseFields.length > 5 ? ' …' : ''}
+                </div>
+              )}
             </>
           )}
         </div>
@@ -962,7 +1064,7 @@ const App = () => {
   const [viewport, setViewport] = useState<ViewportType>('desktop');
   const [viewMode, setViewMode] = useState<ViewMode>('constructor');
   const [pages, setPages] = useState<PagesState>(() => ({
-    [INITIAL_PAGE_ID]: { name: 'Главная', slug: 'main', json: null },
+    [INITIAL_PAGE_ID]: { name: 'Главная', slug: 'main', json: INITIAL_PAGE_JSON },
   }));
   const [currentPageId, setCurrentPageId] = useState<string>(INITIAL_PAGE_ID);
 
@@ -1005,7 +1107,16 @@ const App = () => {
               setCurrentPageId={setCurrentPageId}
             />
           )}
-          <HistoryToolbar viewport={viewport} setViewport={setViewport} viewMode={viewMode} setViewMode={setViewMode} />
+          <HistoryToolbar
+            viewport={viewport}
+            setViewport={setViewport}
+            viewMode={viewMode}
+            setViewMode={setViewMode}
+            pages={pages}
+            setPages={setPages}
+            currentPageId={currentPageId}
+            setCurrentPageId={setCurrentPageId}
+          />
           <div
             style={{
               flex: 1,
