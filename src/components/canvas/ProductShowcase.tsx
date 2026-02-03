@@ -61,6 +61,8 @@ export type ProductShowcaseStyles = {
   columns?: 1 | 2 | 3 | 4 | 5;
   apiUrl?: string;
   limit?: number;
+  /** Путь к массиву элементов в ответе API (например results, data, data.items). Пусто — авто (пробуем results, data, data.data, data.items и т.д.) */
+  listPath?: string;
   /** Подзагрузка при скролле (только в превью) */
   infiniteScroll?: boolean;
   /** Имя query-параметра для пагинации (например offset) */
@@ -74,6 +76,27 @@ export type ProductShowcaseStyles = {
   /** Поле товара для формирования URL (например slug или product_variation_id) */
   cardLinkField?: string;
 };
+
+/** Достаёт значение из объекта по пути (точки и [индекс]). */
+function getValueByPath(obj: unknown, path: string): unknown {
+  if (obj == null || !path) return undefined;
+  const parts = path.trim().split('.');
+  let value: unknown = obj;
+  for (const segment of parts) {
+    if (value == null || typeof value !== 'object') return undefined;
+    const bracketMatch = segment.match(/^([^\[\]]+)\[(\d+)\]$/);
+    if (bracketMatch) {
+      const [, key, indexStr] = bracketMatch;
+      value = (value as Record<string, unknown>)[key];
+      if (value == null || typeof value !== 'object') return undefined;
+      const index = parseInt(indexStr, 10);
+      value = Array.isArray(value) ? value[index] : (value as Record<string, unknown>)[indexStr];
+    } else {
+      value = (value as Record<string, unknown>)[segment];
+    }
+  }
+  return value;
+}
 
 /** Добавляет или заменяет query-параметр в URL */
 function setQueryParam(url: string, key: string, value: number): string {
@@ -150,25 +173,35 @@ function TemplateRenderer({
   );
 }
 
-function extractList(body: ApiResponse): unknown[] {
-  const raw = body?.data;
-  return Array.isArray(raw)
-    ? raw
-    : Array.isArray((raw as Record<string, unknown>)?.data)
-      ? (raw as Record<string, unknown[]>).data
-      : Array.isArray((raw as Record<string, unknown>)?.items)
-        ? (raw as Record<string, unknown[]>).items
-        : Array.isArray((raw as Record<string, unknown>)?.list)
-          ? (raw as Record<string, unknown[]>).list
-          : Array.isArray((raw as Record<string, unknown>)?.products)
-            ? (raw as Record<string, unknown[]>).products
-            : [];
+function extractList(body: unknown, listPath?: string): unknown[] {
+  if (body == null) return [];
+  if (Array.isArray(body)) return body;
+  if (typeof body !== 'object') return [];
+  const b = body as Record<string, unknown>;
+  if (listPath && listPath.trim()) {
+    const value = getValueByPath(body, listPath.trim());
+    return Array.isArray(value) ? value : [];
+  }
+  if (Array.isArray(b.results)) return b.results;
+  if (Array.isArray(b.data)) return b.data;
+  const data = b.data as Record<string, unknown> | undefined;
+  if (data && typeof data === 'object') {
+    if (Array.isArray(data.data)) return data.data;
+    if (Array.isArray(data.items)) return data.items;
+    if (Array.isArray(data.list)) return data.list;
+    if (Array.isArray(data.products)) return data.products;
+  }
+  if (Array.isArray(b.items)) return b.items;
+  if (Array.isArray(b.list)) return b.list;
+  if (Array.isArray(b.products)) return b.products;
+  return [];
 }
 
 export const ProductShowcase = ({
   columns = 3,
   apiUrl = '',
   limit = 30,
+  listPath = '',
   infiniteScroll = false,
   infiniteScrollParam = 'offset',
   cardLinkEnabled = false,
@@ -215,8 +248,8 @@ export const ProductShowcase = ({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((body: ApiResponse) => {
-        const list = extractList(body);
+      .then((body: unknown) => {
+        const list = extractList(body, listPath);
         const normalized = list.map((p) => normalizeApiProduct(p as Record<string, unknown>));
         setProducts(normalized);
         setHasMore(list.length >= limit);
@@ -236,7 +269,7 @@ export const ProductShowcase = ({
         setProducts([]);
       })
       .finally(() => setLoading(false));
-  }, [apiUrl, limit]);
+  }, [apiUrl, limit, listPath]);
 
   const loadMore = useCallback(() => {
     const urlTrimmed = apiUrl?.trim() ?? '';
@@ -250,14 +283,14 @@ export const ProductShowcase = ({
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
-      .then((body: ApiResponse) => {
-        const list = extractList(body);
+      .then((body: unknown) => {
+        const list = extractList(body, listPath);
         setProducts((prev) => [...prev, ...list.map((p) => normalizeApiProduct(p as Record<string, unknown>))]);
         setHasMore(list.length >= limit);
       })
       .catch(() => setHasMore(false))
       .finally(() => setLoadingMore(false));
-  }, [apiUrl, limit, products.length, loadingMore, hasMore, isConstructor, infiniteScroll, infiniteScrollParam]);
+  }, [apiUrl, limit, listPath, products.length, loadingMore, hasMore, isConstructor, infiniteScroll, infiniteScrollParam]);
 
   const cardStyle: React.CSSProperties = {
     border: '1px solid #eee',
@@ -432,11 +465,12 @@ ProductShowcase.craft = {
     columns: 3,
     apiUrl: '',
     limit: 30,
+    listPath: '',
     infiniteScroll: false,
     infiniteScrollParam: 'offset',
-     sampleFields: [],
-     cardLinkEnabled: false,
-     cardLinkPageSlug: 'product',
-     cardLinkField: 'slug',
+    sampleFields: [],
+    cardLinkEnabled: false,
+    cardLinkPageSlug: 'product',
+    cardLinkField: 'slug',
   },
 };

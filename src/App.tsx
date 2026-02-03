@@ -1,7 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Editor, Frame, Element, useEditor } from '@craftjs/core';
-import { Box, Text, Link, Image, ProductShowcase } from './components/canvas';
+import { Box, Text, Link, Image, ProductShowcase, ProductDetail } from './components/canvas';
 import { EditorModeContext } from './contexts/EditorModeContext';
+import { ProductRouteContext } from './contexts/ProductRouteContext';
 
 // Состояние одной страницы: name — для вкладки, slug — путь (product → ссылка /product)
 type PageRecord = { name: string; slug: string; json: string | null };
@@ -177,6 +178,7 @@ const CanvasWithPreview = ({
   setPages,
   currentPageId,
   setCurrentPageId,
+  setCurrentProductId,
 }: {
   isConstructor: boolean;
   canvasWrapperStyle: React.CSSProperties;
@@ -185,6 +187,7 @@ const CanvasWithPreview = ({
   setPages: React.Dispatch<React.SetStateAction<PagesState>>;
   currentPageId: string;
   setCurrentPageId: (id: string) => void;
+  setCurrentProductId: (id: string | null) => void;
 }) => {
   const { actions, query } = useEditor();
 
@@ -202,13 +205,21 @@ const CanvasWithPreview = ({
       const href = (a as HTMLAnchorElement).getAttribute('href') ?? '';
       // Не перехватываем внешние ссылки (http:, https:, mailto:) и якоря (#)
       if (href.includes(':') || href === '' || href === '#') return;
-      const path = href.replace(/^\//, '').split('/')[0] || 'main';
-      const entry = Object.entries(pages).find(([, p]) => p.slug === path || (path === 'main' && p.slug === 'main'));
+      const clean = href.replace(/^\//, '');
+      const segments = clean.split('/');
+      const slugSegment = segments[0] || 'main';
+      const productIdSegment = segments[1] || null;
+
+      const entry = Object.entries(pages).find(
+        ([, p]) => p.slug === slugSegment || (slugSegment === 'main' && p.slug === 'main')
+      );
       if (!entry) return;
       e.preventDefault();
       e.stopPropagation();
       const [targetId] = entry;
       if (targetId === currentPageId) return;
+      // Сохраняем текущий product_id (если он есть во втором сегменте URL), чтобы страница продукта знала, какой товар грузить
+      setCurrentProductId(productIdSegment);
       // Сначала сохраняем текущую страницу в pages, иначе правки на ней потеряются
       const serialized = query.serialize();
       setPages((prev) => ({
@@ -218,7 +229,7 @@ const CanvasWithPreview = ({
       setCurrentPageId(targetId);
       actions.deserialize(pages[targetId]?.json ?? EMPTY_PAGE_JSON);
     },
-    [isConstructor, pages, currentPageId, setPages, setCurrentPageId, query, actions]
+    [isConstructor, pages, currentPageId, setPages, setCurrentPageId, setCurrentProductId, query, actions]
   );
 
   return (
@@ -467,6 +478,12 @@ const Toolbox = () => {
         >
           Витрина товаров
         </div>
+        <div
+          ref={(ref) => ref && connectors.create(ref, <Element is={ProductDetail} />)}
+          style={toolboxItemStyle}
+        >
+          Страница продукта
+        </div>
       </div>
     </div>
   );
@@ -483,15 +500,16 @@ const SettingsPanel = () => {
     if (id) {
       try {
         const ancestors = q.node(id).ancestors();
-        const showcaseId = ancestors.find((ancId: string) => state.nodes[ancId]?.data?.displayName === 'Витрина');
-        isInsideShowcase = Boolean(showcaseId);
-        if (showcaseId) {
-          const showcaseNode = state.nodes[showcaseId];
-          const sProps = (showcaseNode?.data?.props ?? {}) as Record<string, unknown>;
+        const productContextId = ancestors.find((ancId: string) => {
+          const dn = state.nodes[ancId]?.data?.displayName;
+          return dn === 'Витрина' || dn === 'Страница продукта';
+        });
+        isInsideShowcase = Boolean(productContextId);
+        if (productContextId) {
+          const ancestorNode = state.nodes[productContextId];
+          const sProps = (ancestorNode?.data?.props ?? {}) as Record<string, unknown>;
           const sample = sProps.sampleFields;
-          if (Array.isArray(sample)) {
-            showcaseFields = sample as string[];
-          }
+          if (Array.isArray(sample)) showcaseFields = sample as string[];
         }
       } catch {
         // ignore
@@ -512,11 +530,13 @@ const SettingsPanel = () => {
   const isLink = displayName === 'Ссылка';
   const isImage = displayName === 'Картинка';
   const isShowcase = displayName === 'Витрина';
+  const isProductDetail = displayName === 'Страница продукта';
   const textProps = isText ? (selectedNodeProps as Record<string, unknown>) : {};
   const boxProps = isBox ? (selectedNodeProps as Record<string, unknown>) : {};
   const linkProps = isLink ? (selectedNodeProps as Record<string, unknown>) : {};
   const imageProps = isImage ? (selectedNodeProps as Record<string, unknown>) : {};
   const showcaseProps = isShowcase ? (selectedNodeProps as Record<string, unknown>) : {};
+  const detailProps = isProductDetail ? (selectedNodeProps as Record<string, unknown>) : {};
   const contentFromStore = isText ? String(textProps.content ?? '') : isLink ? String(linkProps.content ?? '') : '';
 
   const [localContent, setLocalContent] = useState(contentFromStore);
@@ -532,6 +552,7 @@ const SettingsPanel = () => {
   const setBoxProp = (key: string, value: unknown) => setProp(key, value);
   const setLinkProp = (key: string, value: unknown) => setProp(key, value);
   const setShowcaseProp = (key: string, value: unknown) => setProp(key, value);
+  const setDetailProp = (key: string, value: unknown) => setProp(key, value);
 
   const labelStyle = { display: 'block' as const, fontSize: 11, color: '#666', marginBottom: 4, marginTop: 12 };
   const inputStyle = {
@@ -830,15 +851,25 @@ const SettingsPanel = () => {
         <div>
           <div style={{ fontSize: 12, color: '#2563eb', fontWeight: 500, marginBottom: 8 }}>Витрина товаров (выбран на холсте)</div>
 
-          <label style={{ ...labelStyle, marginTop: 0 }}>URL API товаров</label>
+          <label style={{ ...labelStyle, marginTop: 0 }}>URL API</label>
           <input
             type="text"
-            placeholder="https://dev-api.cezyo.com/v3/client/catalog/products?limit=30&filter=%7B%7D"
+            placeholder="https://pokeapi.co/api/v2/ability/?limit=20"
             value={String(showcaseProps.apiUrl ?? '')}
             onChange={(e) => setShowcaseProp('apiUrl', e.target.value)}
             style={inputStyle}
           />
-          <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>GET-запрос, ответ: объект с полем data — массив товаров (name, price, image.urls.small.url)</div>
+          <label style={labelStyle}>Путь к массиву в ответе</label>
+          <input
+            type="text"
+            placeholder="results или data (пусто — авто)"
+            value={String(showcaseProps.listPath ?? '')}
+            onChange={(e) => setShowcaseProp('listPath', e.target.value)}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+            Куда смотреть в JSON: <code>results</code>, <code>data</code>, <code>data.items</code> и т.д. Пусто — пробуем results, data, data.data, data.items.
+          </div>
 
           <label style={labelStyle}>Колонок в сетке</label>
           <select
@@ -927,6 +958,23 @@ const SettingsPanel = () => {
               )}
             </>
           )}
+        </div>
+          ) : isProductDetail ? (
+        <div>
+          <div style={{ fontSize: 12, color: '#2563eb', fontWeight: 500, marginBottom: 8 }}>Страница сущности (выбран на холсте)</div>
+
+          <label style={{ ...labelStyle, marginTop: 0 }}>URL API сущности</label>
+          <input
+            type="text"
+            placeholder="https://dev-api.cezyo.com/v3/client/products/${product_id}/full"
+            value={String(detailProps.apiUrl ?? '')}
+            onChange={(e) => setDetailProp('apiUrl', e.target.value)}
+            style={inputStyle}
+          />
+          <div style={{ fontSize: 10, color: '#888', marginTop: 2 }}>
+            Плейсхолдер заменится на значение из ссылки (с витрины: поле «Поле товара для URL» — slug или product_id).
+            Варианты: <code>{'${product_id}'}</code>, <code>{'${id}'}</code>, <code>{'{id}'}</code>, <code>:id</code>. Пример: /product/201 → запрос с id=201.
+          </div>
         </div>
           ) : isBox ? (
         <div>
@@ -1056,6 +1104,7 @@ const resolver: Record<string, React.ComponentType<any>> = {
   'Link': Link,
   'Image': Image,
   'ProductShowcase': ProductShowcase,
+  'ProductDetail': ProductDetail,
 };
 
 const INITIAL_PAGE_ID = 'page-1';
@@ -1067,6 +1116,7 @@ const App = () => {
     [INITIAL_PAGE_ID]: { name: 'Главная', slug: 'main', json: INITIAL_PAGE_JSON },
   }));
   const [currentPageId, setCurrentPageId] = useState<string>(INITIAL_PAGE_ID);
+  const [currentProductId, setCurrentProductId] = useState<string | null>(null);
 
   const canvasWidth = VIEWPORT_WIDTH[viewport];
   const canvasWrapperStyle = {
@@ -1092,54 +1142,57 @@ const App = () => {
 
   return (
     <div style={{ display: 'flex', height: '100vh' }}>
-      <Editor
-        resolver={resolver}
-        enabled={isConstructor}
-        indicator={{ style: { pointerEvents: 'none' } }}
-      >
-        {isConstructor && <Toolbox />}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
-          {isConstructor && (
-            <PageSwitcher
+      <ProductRouteContext.Provider value={{ productId: currentProductId, setProductId: setCurrentProductId }}>
+        <Editor
+          resolver={resolver}
+          enabled={isConstructor}
+          indicator={{ style: { pointerEvents: 'none' } }}
+        >
+          {isConstructor && <Toolbox />}
+          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', minWidth: 0 }}>
+            {isConstructor && (
+              <PageSwitcher
+                pages={pages}
+                setPages={setPages}
+                currentPageId={currentPageId}
+                setCurrentPageId={setCurrentPageId}
+              />
+            )}
+            <HistoryToolbar
+              viewport={viewport}
+              setViewport={setViewport}
+              viewMode={viewMode}
+              setViewMode={setViewMode}
               pages={pages}
               setPages={setPages}
               currentPageId={currentPageId}
               setCurrentPageId={setCurrentPageId}
             />
-          )}
-          <HistoryToolbar
-            viewport={viewport}
-            setViewport={setViewport}
-            viewMode={viewMode}
-            setViewMode={setViewMode}
-            pages={pages}
-            setPages={setPages}
-            currentPageId={currentPageId}
-            setCurrentPageId={setCurrentPageId}
-          />
-          <div
-            style={{
-              flex: 1,
-              padding: isConstructor ? 24 : 0,
-              overflow: 'auto',
-              background: isConstructor ? '#fafafa' : '#fff',
-              display: 'flex',
-              justifyContent: isConstructor ? 'center' : 'stretch',
-            }}
-          >
-            <CanvasWithPreview
-              isConstructor={isConstructor}
-              canvasWrapperStyle={canvasWrapperStyle}
-              previewWrapperStyle={previewWrapperStyle}
-              pages={pages}
-              setPages={setPages}
-              currentPageId={currentPageId}
-              setCurrentPageId={setCurrentPageId}
-            />
+            <div
+              style={{
+                flex: 1,
+                padding: isConstructor ? 24 : 0,
+                overflow: 'auto',
+                background: isConstructor ? '#fafafa' : '#fff',
+                display: 'flex',
+                justifyContent: isConstructor ? 'center' : 'stretch',
+              }}
+            >
+              <CanvasWithPreview
+                isConstructor={isConstructor}
+                canvasWrapperStyle={canvasWrapperStyle}
+                previewWrapperStyle={previewWrapperStyle}
+                pages={pages}
+                setPages={setPages}
+                currentPageId={currentPageId}
+                setCurrentPageId={setCurrentPageId}
+                setCurrentProductId={setCurrentProductId}
+              />
+            </div>
           </div>
-        </div>
-        {isConstructor && <SettingsPanel />}
-      </Editor>
+          {isConstructor && <SettingsPanel />}
+        </Editor>
+      </ProductRouteContext.Provider>
     </div>
   );
 };

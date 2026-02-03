@@ -19,14 +19,29 @@ export type ProductItem = {
 
 export const ProductContext = createContext<ProductItem | null>(null);
 
-/** Достаёт значение из объекта по пути вида "name", "image.urls.small.url" */
+/**
+ * Достаёт значение из объекта по пути.
+ * Поддерживает точки и индексы массивов в скобках:
+ * - name
+ * - image.urls.small.url
+ * - data.variations[0].images.urls.small.url
+ */
 export function getProductFieldValue(product: ProductItem | null, path: string): string | number | undefined {
   if (!product || !path) return undefined;
   const parts = path.split('.');
   let value: unknown = product;
-  for (const key of parts) {
+  for (const segment of parts) {
     if (value == null || typeof value !== 'object') return undefined;
-    value = (value as Record<string, unknown>)[key];
+    const bracketMatch = segment.match(/^([^\[\]]+)\[(\d+)\]$/);
+    if (bracketMatch) {
+      const [, key, indexStr] = bracketMatch;
+      value = (value as Record<string, unknown>)[key];
+      if (value == null || typeof value !== 'object') return undefined;
+      const index = parseInt(indexStr, 10);
+      value = Array.isArray(value) ? value[index] : (value as Record<string, unknown>)[indexStr];
+    } else {
+      value = (value as Record<string, unknown>)[segment];
+    }
   }
   if (typeof value === 'string' || typeof value === 'number') return value;
   return value != null ? String(value) : undefined;
